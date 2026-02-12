@@ -47,11 +47,12 @@ class GradeWritingRequest(BaseModel):
 class ChatMessage(BaseModel):
     message: str
 
+# FIX: Campos opcionales para evitar error 422 si falta un módulo
 class FinalResults(BaseModel):
-    reading: float
-    writing: float
-    listening: float
-    speaking: float
+    reading: Optional[float] = 0.0
+    writing: Optional[float] = 0.0
+    listening: Optional[float] = 0.0
+    speaking: Optional[float] = 0.0
     level: str
 
 # --- ENDPOINTS ---
@@ -79,7 +80,8 @@ async def generate_questions(req: ModuleRequest):
         "reading": "Generate a title, a 3-paragraph passage, and 5 multiple choice questions. JSON format: { 'title': '...', 'passage': '...', 'questions': [{ 'question': '...', 'options': ['...', '...'], 'correctAnswer': '...' }] }",
         "listening": "Generate a conversational transcript (passage) and 5 questions. JSON format: { 'passage': '...', 'questions': [{ 'question': '...', 'options': ['...', '...'], 'correctAnswer': '...' }] }",
         "writing": "Generate a writing prompt. JSON format: { 'title': '...', 'passage': '...' }",
-        "speaking": "Generate 5 sentences for pronunciation. JSON format: { 'questions': [{ 'question': '...' }] }"
+        # FIX: Ajuste de estructura para Speaking
+        "speaking": "Generate 1 clear English sentence for pronunciation practice. JSON format: { 'targetSentence': '...', 'prompt': 'Pronounce the following sentence clearly.' }"
     }
 
     instruction = prompt_templates.get(req.type, "General English task.")
@@ -98,7 +100,7 @@ async def generate_questions(req: ModuleRequest):
         print(f"Error OpenAI: {e}")
         raise HTTPException(status_code=500, detail="Error con el motor de IA")
 
-# 3. EVALUADOR DE WRITING (NUEVO)
+# 3. EVALUADOR DE WRITING
 @app.post("/api/v1/grade-writing")
 async def grade_writing(req: GradeWritingRequest):
     try:
@@ -126,24 +128,30 @@ async def grade_writing(req: GradeWritingRequest):
         print(f"Error Grading: {e}")
         return {"score": 0, "feedback": "No se pudo procesar la evaluación técnica."}
 
-# 4. REPORTE FINAL INTELIGENTE
+# 4. REPORTE FINAL INTELIGENTE (Integración de Scores)
 @app.post("/api/v1/generate-report")
 async def generate_final_report(data: FinalResults):
+    # Consolidamos los resultados para el prompt
     prompt_report = f"""
     Actúa como un coach experto en idiomas. Nivel: {data.level}.
-    Scores: Reading {data.reading}%, Writing {data.writing}%, Listening {data.listening}%, Speaking {data.speaking}%.
+    Scores actuales: 
+    - Reading: {data.reading}%
+    - Writing: {data.writing}%
+    - Listening: {data.listening}%
+    - Speaking: {data.speaking}%
     
-    Analiza y genera feedback en español.
+    Analiza las debilidades y fortalezas basándote en estos números. 
+    Genera feedback en español motivador.
     Devuelve JSON:
-    1. "ai_advice": Párrafo de análisis.
-    2. "steps": Lista de 3 acciones concretas.
+    1. "ai_advice": Párrafo de análisis profundo.
+    2. "steps": Lista de 3 acciones concretas para subir de nivel.
     """
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Eres un evaluador profesional. Responde en JSON."},
+                {"role": "system", "content": "Eres un coach de idiomas profesional. Responde en JSON."},
                 {"role": "user", "content": prompt_report}
             ],
             response_format={"type": "json_object"}
@@ -152,16 +160,16 @@ async def generate_final_report(data: FinalResults):
         report_content = json.loads(response.choices[0].message.content)
         
         return {
-            "scores": data.dict(),
+            "scores": data.model_dump(), # model_dump() es el nuevo dict() en Pydantic V2
             "ai_advice": report_content.get("ai_advice"),
             "steps": report_content.get("steps")
         }
     except Exception as e:
         print(f"Error Reporte: {e}")
         return {
-            "scores": data.dict(),
-            "ai_advice": "¡Excelente esfuerzo! Sigue practicando para perfeccionar tu nivel.",
-            "steps": ["Repasa estructuras gramaticales", "Aumenta tu exposición auditiva", "Escribe textos cortos diariamente"]
+            "scores": data.model_dump(),
+            "ai_advice": "¡Buen trabajo en tus módulos! Sigue practicando de manera constante.",
+            "steps": ["Practica 15 min diarios", "Escucha podcasts en inglés", "Escribe un diario corto"]
         }
 
 # 5. CHATBOT ASISTENTE
@@ -171,14 +179,14 @@ async def chatbot_helper(data: ChatMessage):
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Eres el asistente de X-Learning Online. Responde de forma amable y breve."},
+                {"role": "system", "content": "Eres el asistente de Certifica_AI. Responde de forma amable, breve y técnica si es necesario."},
                 {"role": "user", "content": data.message}
             ],
             max_tokens=150
         )
         return {"reply": response.choices[0].message.content}
     except Exception as e:
-        return {"reply": "Lo siento, tengo un problema de conexión temporal."}
+        return {"reply": "Lo siento, tengo un problema de conexión temporal con mi cerebro de IA."}
 
 if __name__ == "__main__":
     import uvicorn

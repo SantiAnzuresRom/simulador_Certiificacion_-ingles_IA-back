@@ -1,2 +1,5 @@
 .env
 serviceAccountKey.jsongit add .gitignore
+# Firebase / Google Secrets
+serviceAccountKey.json
+.env
