@@ -9,13 +9,13 @@ otp_storage = {}
 
 @router.post("/send-otp")
 async def send_otp(request: OTPRequest):
-    # 1. Generar código de 8 dígitos
+
     code = str(random.randint(10000000, 99999999))
     
-    # 2. Guardar código (puedes añadir lógica de expiración después)
+    
     otp_storage[request.email] = code
     
-    # 3. Simular envío de correo (Aquí conectarías con tu servicio de mail)
+    
     print(f"DEBUG: Enviando código {code} al correo {request.email}")
     
     return {"message": "Código enviado con éxito"}

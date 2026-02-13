@@ -1,18 +1,26 @@
 import os
 import json
-from fastapi import FastAPI, HTTPException
+import random
+from datetime import datetime
+from typing import Optional, List
+
+from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, List
-from datetime import datetime
-from app.core.firebase_config import db 
 
-# Cargar variables de entorno (.env)
+# Importación de Firebase (Asegúrate que tu config esté en app/core/firebase_config.py)
+try:
+    from app.core.firebase_config import db 
+except ImportError:
+    db = None
+    print("⚠️ Advertencia: No se pudo cargar Firebase. El registro no funcionará.")
+
+# Cargar variables de entorno
 load_dotenv()
 
-app = FastAPI(title="Certifica AI - Backend")
+app = FastAPI(title="Certifica AI - Full Backend")
 
 # --- CONFIGURACIÓN DE CORS ---
 app.add_middleware(
@@ -26,7 +34,17 @@ app.add_middleware(
 # Inicializar cliente OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# --- BASE DE DATOS TEMPORAL PARA OTP ---
+otp_storage = {}
+
 # --- MODELOS DE DATOS (PYDANTIC) ---
+
+class OTPRequest(BaseModel):
+    email: str
+
+class OTPVerify(BaseModel):
+    email: str
+    code: str
 
 class UserRegister(BaseModel):
     uid: str
@@ -47,7 +65,6 @@ class GradeWritingRequest(BaseModel):
 class ChatMessage(BaseModel):
     message: str
 
-# FIX: Campos opcionales para evitar error 422 si falta un módulo
 class FinalResults(BaseModel):
     reading: Optional[float] = 0.0
     writing: Optional[float] = 0.0
@@ -55,11 +72,42 @@ class FinalResults(BaseModel):
     speaking: Optional[float] = 0.0
     level: str
 
-# --- ENDPOINTS ---
+# --- ENDPOINTS DE AUTENTICACIÓN (OTP) ---
 
-# 1. REGISTRO EN FIREBASE
+@app.post("/api/v1/auth/send-otp")
+async def send_otp(request: OTPRequest):
+    try:
+        # Generar código de 8 dígitos
+        code = str(random.randint(10000000, 99999999))
+        otp_storage[request.email] = code
+        
+        # En consola para que puedas copiarlo mientras no hay servicio de Email
+        print(f"🔥 [DEBUG] Código OTP para {request.email}: {code}")
+        
+        return {"status": "success", "message": "Código enviado con éxito"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al generar OTP: {str(e)}")
+
+@app.post("/api/v1/auth/verify-otp")
+async def verify_otp(request: OTPVerify):
+    saved_code = otp_storage.get(request.email)
+    
+    if saved_code and saved_code == request.code:
+        # Limpiar el código usado
+        del otp_storage[request.email]
+        return {"status": "success", "message": "Verificación exitosa"}
+    
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Código incorrecto o expirado, bro"
+    )
+
+# --- ENDPOINTS DE USUARIO ---
+
 @app.post("/api/v1/users/register")
 async def register_user(user: UserRegister):
+    if not db:
+        raise HTTPException(status_code=500, detail="Firestore no configurado")
     try:
         db.collection("users").document(user.uid).set({
             "full_name": user.full_name,
@@ -73,14 +121,14 @@ async def register_user(user: UserRegister):
         print(f"Error Firestore: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# 2. GENERADOR DE EXÁMENES (IA)
+# --- ENDPOINTS DE INTELIGENCIA ARTIFICIAL ---
+
 @app.post("/api/v1/generate-questions")
 async def generate_questions(req: ModuleRequest):
     prompt_templates = {
         "reading": "Generate a title, a 3-paragraph passage, and 5 multiple choice questions. JSON format: { 'title': '...', 'passage': '...', 'questions': [{ 'question': '...', 'options': ['...', '...'], 'correctAnswer': '...' }] }",
         "listening": "Generate a conversational transcript (passage) and 5 questions. JSON format: { 'passage': '...', 'questions': [{ 'question': '...', 'options': ['...', '...'], 'correctAnswer': '...' }] }",
         "writing": "Generate a writing prompt. JSON format: { 'title': '...', 'passage': '...' }",
-        # FIX: Ajuste de estructura para Speaking
         "speaking": "Generate 1 clear English sentence for pronunciation practice. JSON format: { 'targetSentence': '...', 'prompt': 'Pronounce the following sentence clearly.' }"
     }
 
@@ -97,10 +145,8 @@ async def generate_questions(req: ModuleRequest):
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        print(f"Error OpenAI: {e}")
         raise HTTPException(status_code=500, detail="Error con el motor de IA")
 
-# 3. EVALUADOR DE WRITING
 @app.post("/api/v1/grade-writing")
 async def grade_writing(req: GradeWritingRequest):
     try:
@@ -108,13 +154,11 @@ async def grade_writing(req: GradeWritingRequest):
         Actúa como un examinador oficial de nivel {req.level}.
         Consigna: {req.prompt}
         Texto del alumno: {req.content}
-        
         Evalúa gramática, vocabulario y coherencia. 
         Devuelve ÚNICAMENTE un JSON con:
         1. "score": Un número entero del 0 al 100.
-        2. "feedback": Un párrafo breve (máximo 3 líneas) en español con consejos específicos.
+        2. "feedback": Un párrafo breve en español con consejos específicos.
         """
-
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -125,28 +169,16 @@ async def grade_writing(req: GradeWritingRequest):
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        print(f"Error Grading: {e}")
-        return {"score": 0, "feedback": "No se pudo procesar la evaluación técnica."}
+        return {"score": 0, "feedback": "Error técnico en la evaluación."}
 
-# 4. REPORTE FINAL INTELIGENTE (Integración de Scores)
 @app.post("/api/v1/generate-report")
 async def generate_final_report(data: FinalResults):
-    # Consolidamos los resultados para el prompt
     prompt_report = f"""
     Actúa como un coach experto en idiomas. Nivel: {data.level}.
-    Scores actuales: 
-    - Reading: {data.reading}%
-    - Writing: {data.writing}%
-    - Listening: {data.listening}%
-    - Speaking: {data.speaking}%
-    
-    Analiza las debilidades y fortalezas basándote en estos números. 
-    Genera feedback en español motivador.
-    Devuelve JSON:
-    1. "ai_advice": Párrafo de análisis profundo.
-    2. "steps": Lista de 3 acciones concretas para subir de nivel.
+    Scores: Reading {data.reading}%, Writing {data.writing}%, Listening {data.listening}%, Speaking {data.speaking}%.
+    Analiza debilidades y fortalezas. Feedback en español motivador.
+    JSON: {{"ai_advice": "...", "steps": ["...", "...", "..."]}}
     """
-
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -156,37 +188,29 @@ async def generate_final_report(data: FinalResults):
             ],
             response_format={"type": "json_object"}
         )
-        
         report_content = json.loads(response.choices[0].message.content)
-        
         return {
-            "scores": data.model_dump(), # model_dump() es el nuevo dict() en Pydantic V2
+            "scores": data.model_dump(),
             "ai_advice": report_content.get("ai_advice"),
             "steps": report_content.get("steps")
         }
-    except Exception as e:
-        print(f"Error Reporte: {e}")
-        return {
-            "scores": data.model_dump(),
-            "ai_advice": "¡Buen trabajo en tus módulos! Sigue practicando de manera constante.",
-            "steps": ["Practica 15 min diarios", "Escucha podcasts en inglés", "Escribe un diario corto"]
-        }
+    except Exception:
+        return {"ai_advice": "¡Sigue practicando!", "steps": ["Estudia más", "Lee diario"]}
 
-# 5. CHATBOT ASISTENTE
 @app.post("/api/v1/chatbot")
 async def chatbot_helper(data: ChatMessage):
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Eres el asistente de Certifica_AI. Responde de forma amable, breve y técnica si es necesario."},
+                {"role": "system", "content": "Eres el asistente de Certifica_AI."},
                 {"role": "user", "content": data.message}
             ],
             max_tokens=150
         )
         return {"reply": response.choices[0].message.content}
-    except Exception as e:
-        return {"reply": "Lo siento, tengo un problema de conexión temporal con mi cerebro de IA."}
+    except Exception:
+        return {"reply": "Error de conexión con la IA."}
 
 if __name__ == "__main__":
     import uvicorn
