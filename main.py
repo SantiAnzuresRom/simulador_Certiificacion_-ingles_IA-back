@@ -10,12 +10,12 @@ from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# Importación de Firebase (Asegúrate que tu config esté en app/core/firebase_config.py)
+# Importación de Firebase
 try:
     from app.core.firebase_config import db 
 except ImportError:
     db = None
-    print("⚠️ Advertencia: No se pudo cargar Firebase. El registro no funcionará.")
+    print("⚠️ Advertencia: No se pudo cargar Firebase.")
 
 # Cargar variables de entorno
 load_dotenv()
@@ -77,24 +77,23 @@ class FinalResults(BaseModel):
 @app.post("/api/v1/auth/send-otp")
 async def send_otp(request: OTPRequest):
     try:
-        # Generar código de 8 dígitos
+        # Limpiamos el email y lo pasamos a minúsculas
+        email_clean = request.email.strip().lower()
         code = str(random.randint(10000000, 99999999))
-        otp_storage[request.email] = code
+        otp_storage[email_clean] = code
         
-        # En consola para que puedas copiarlo mientras no hay servicio de Email
-        print(f"🔥 [DEBUG] Código OTP para {request.email}: {code}")
-        
+        print(f"🔥 [DEBUG] Código OTP para {email_clean}: {code}")
         return {"status": "success", "message": "Código enviado con éxito"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al generar OTP: {str(e)}")
 
 @app.post("/api/v1/auth/verify-otp")
 async def verify_otp(request: OTPVerify):
-    saved_code = otp_storage.get(request.email)
+    email_clean = request.email.strip().lower()
+    saved_code = otp_storage.get(email_clean)
     
-    if saved_code and saved_code == request.code:
-        # Limpiar el código usado
-        del otp_storage[request.email]
+    if saved_code and saved_code == request.code.strip():
+        del otp_storage[email_clean]
         return {"status": "success", "message": "Verificación exitosa"}
     
     raise HTTPException(
@@ -109,9 +108,10 @@ async def register_user(user: UserRegister):
     if not db:
         raise HTTPException(status_code=500, detail="Firestore no configurado")
     try:
+        # Guardamos el nombre en formato Título (Juan Perez) y email en minúsculas
         db.collection("users").document(user.uid).set({
-            "full_name": user.full_name,
-            "email": user.email,
+            "full_name": user.full_name.strip().title(),
+            "email": user.email.strip().lower(),
             "phone": user.phone,
             "birth_date": user.birth_date,
             "created_at": datetime.now()
@@ -139,11 +139,20 @@ async def generate_questions(req: ModuleRequest):
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You are a professional CEFR language examiner. Return ONLY valid JSON."},
-                {"role": "user", "content": f"Level: {req.level}. Task: {instruction}"}
+                {"role": "user", "content": f"Level: {req.level.upper()}. Task: {instruction}"}
             ],
             response_format={ "type": "json_object" }
         )
-        return json.loads(response.choices[0].message.content)
+        
+        data = json.loads(response.choices[0].message.content)
+        
+        # --- FORMATEO A TÍTULOS (Capitalizar respuestas) ---
+        if "questions" in data:
+            for q in data["questions"]:
+                q["options"] = [opt.capitalize() for opt in q["options"]]
+                q["correctAnswer"] = q["correctAnswer"].capitalize()
+        
+        return data
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error con el motor de IA")
 
@@ -151,7 +160,7 @@ async def generate_questions(req: ModuleRequest):
 async def grade_writing(req: GradeWritingRequest):
     try:
         prompt_grade = f"""
-        Actúa como un examinador oficial de nivel {req.level}.
+        Actúa como un examinador oficial de nivel {req.level.upper()}.
         Consigna: {req.prompt}
         Texto del alumno: {req.content}
         Evalúa gramática, vocabulario y coherencia. 
@@ -174,7 +183,7 @@ async def grade_writing(req: GradeWritingRequest):
 @app.post("/api/v1/generate-report")
 async def generate_final_report(data: FinalResults):
     prompt_report = f"""
-    Actúa como un coach experto en idiomas. Nivel: {data.level}.
+    Actúa como un coach experto en idiomas. Nivel: {data.level.upper()}.
     Scores: Reading {data.reading}%, Writing {data.writing}%, Listening {data.listening}%, Speaking {data.speaking}%.
     Analiza debilidades y fortalezas. Feedback en español motivador.
     JSON: {{"ai_advice": "...", "steps": ["...", "...", "..."]}}
@@ -192,7 +201,7 @@ async def generate_final_report(data: FinalResults):
         return {
             "scores": data.model_dump(),
             "ai_advice": report_content.get("ai_advice"),
-            "steps": report_content.get("steps")
+            "steps": [step.capitalize() for step in report_content.get("steps", [])]
         }
     except Exception:
         return {"ai_advice": "¡Sigue practicando!", "steps": ["Estudia más", "Lee diario"]}
@@ -203,7 +212,7 @@ async def chatbot_helper(data: ChatMessage):
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Eres el asistente de Certifica_AI."},
+                {"role": "system", "content": "Eres el asistente de Certifica_AI. Responde de forma clara."},
                 {"role": "user", "content": data.message}
             ],
             max_tokens=150
