@@ -2,11 +2,11 @@ import os
 import sys
 import json
 import random
+import resend
 from datetime import datetime
 from typing import Optional, List
 
-# --- FIX CRUCIAL DE RUTAS ---
-# Esto asegura que encuentre la carpeta 'app' y el 'serviceAccountKey.json'
+# --- CONFIGURACIÓN DE RUTAS ---
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException, status
@@ -15,17 +15,24 @@ from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# Importación de Firebase con manejo de error real
+# Cargar variables de entorno
+load_dotenv()
+
+app = FastAPI(title="Certifica AI - Full Backend")
+
+# Configuración de Resend (Para envío de correos reales)
+# Asegúrate de tener RESEND_API_KEY en tu archivo .env
+resend.api_key = os.getenv("RESEND_API_KEY")
+
+# Inicializar cliente OpenAI
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Importación de Firebase
 try:
     from app.core.firebase_config import db 
 except Exception as e:
     db = None
     print(f"❌ Error al conectar Firebase: {e}")
-
-# Cargar variables de entorno
-load_dotenv()
-
-app = FastAPI(title="Certifica AI - Full Backend")
 
 # --- CONFIGURACIÓN DE CORS ---
 app.add_middleware(
@@ -36,14 +43,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inicializar cliente OpenAI
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# --- BASE DE DATOS TEMPORAL PARA OTP ---
+# --- BASE DE DATOS ÚNICA PARA OTP (Soluciona el error de código incorrecto) ---
 otp_storage = {}
 
-# --- MODELOS DE DATOS (PYDANTIC) ---
-
+# --- MODELOS DE DATOS ---
 class OTPRequest(BaseModel):
     email: str
 
@@ -59,8 +62,8 @@ class UserRegister(BaseModel):
     birth_date: Optional[str] = ""
 
 class ModuleRequest(BaseModel):
-    type: str # reading, writing, listening, speaking
-    level: str # A1, A2, B1, B2, C1, C2
+    type: str 
+    level: str 
 
 class GradeWritingRequest(BaseModel):
     content: str
@@ -84,7 +87,30 @@ async def send_otp(request: OTPRequest):
     try:
         email_clean = request.email.strip().lower()
         code = str(random.randint(10000000, 99999999))
+        
+        # Guardamos en la memoria del servidor
         otp_storage[email_clean] = code
+        
+        # ENVÍO DE CORREO REAL CON RESEND
+        try:
+            resend.Emails.send({
+                "from": "CertificaAI <onboarding@resend.dev>",
+                "to": [email_clean],
+                "subject": f"{code} es tu código de verificación",
+                "html": f"""
+                    <div style="font-family: sans-serif; max-width: 400px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 15px; text-align: center;">
+                        <h2 style="color: #0f172a;">Verifica tu identidad</h2>
+                        <p style="color: #64748b;">Copia este código para completar tu registro en CertificaAI:</p>
+                        <div style="background: #f1f5f9; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                            <h1 style="letter-spacing: 8px; color: #000; margin: 0;">{code}</h1>
+                        </div>
+                        <p style="font-size: 11px; color: #94a3b8;">Este código expirará pronto. Si no solicitaste esto, ignora este mensaje.</p>
+                    </div>
+                """
+            })
+        except Exception as email_err:
+            print(f"⚠️ Error enviando correo: {email_err}. Se mantiene el DEBUG en consola.")
+
         print(f"🔥 [DEBUG] Código OTP para {email_clean}: {code}")
         return {"status": "success", "message": "Código enviado con éxito"}
     except Exception as e:
@@ -93,11 +119,20 @@ async def send_otp(request: OTPRequest):
 @app.post("/api/v1/auth/verify-otp")
 async def verify_otp(request: OTPVerify):
     email_clean = request.email.strip().lower()
+    input_code = request.code.strip()
+    
     saved_code = otp_storage.get(email_clean)
-    if saved_code and saved_code == request.code.strip():
+    
+    print(f"🔍 [VERIFY] Email: {email_clean} | Recibido: {input_code} | Esperado: {saved_code}")
+
+    if saved_code and str(saved_code) == str(input_code):
         del otp_storage[email_clean]
         return {"status": "success", "message": "Verificación exitosa"}
-    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Código incorrecto o expirado, bro")
+    
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST, 
+        detail="Código incorrecto o expirado, bro"
+    )
 
 # --- ENDPOINTS DE USUARIO ---
 
@@ -113,11 +148,11 @@ async def register_user(user: UserRegister):
             "birth_date": user.birth_date,
             "created_at": datetime.now()
         })
-        return {"status": "success", "message": "Perfil guardado en Firebase"}
+        return {"status": "success", "message": "Perfil guardado correctamente"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- ENDPOINTS DE INTELIGENCIA ARTIFICIAL ---
+# --- ENDPOINTS DE INTELIGENCIA ARTIFICIAL (GPT-4o) ---
 
 @app.post("/api/v1/generate-questions")
 async def generate_questions(req: ModuleRequest):
@@ -137,55 +172,9 @@ async def generate_questions(req: ModuleRequest):
             ],
             response_format={ "type": "json_object" }
         )
-        data = json.loads(response.choices[0].message.content)
-        if "questions" in data:
-            for q in data["questions"]:
-                q["options"] = [opt.capitalize() for opt in q["options"]]
-                q["correctAnswer"] = q["correctAnswer"].capitalize()
-        return data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Error con el motor de IA")
-
-@app.post("/api/v1/grade-writing")
-async def grade_writing(req: GradeWritingRequest):
-    try:
-        prompt_grade = f"""
-        Actúa como un examinador oficial de nivel {req.level.upper()}.
-        Consigna: {req.prompt} | Texto del alumno: {req.content}
-        Evalúa gramática, vocabulario y coherencia. Devuelve JSON con 'score' (0-100) y 'feedback' en español.
-        """
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "Eres un evaluador profesional de idiomas. Responde estrictamente en JSON."},
-                {"role": "user", "content": prompt_grade}
-            ],
-            response_format={"type": "json_object"}
-        )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        return {"score": 0, "feedback": "Error técnico en la evaluación."}
-
-@app.post("/api/v1/generate-report")
-async def generate_final_report(data: FinalResults):
-    prompt_report = f"Analiza estos scores: Reading {data.reading}%, Writing {data.writing}%, Listening {data.listening}%, Speaking {data.speaking}%. Nivel: {data.level}. Feedback motivador en JSON: {{'ai_advice': '...', 'steps': ['...', '...']}}"
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "Eres un coach de idiomas profesional. Responde en JSON."},
-                {"role": "user", "content": prompt_report}
-            ],
-            response_format={"type": "json_object"}
-        )
-        report_content = json.loads(response.choices[0].message.content)
-        return {
-            "scores": data.model_dump(),
-            "ai_advice": report_content.get("ai_advice"),
-            "steps": [step.capitalize() for step in report_content.get("steps", [])]
-        }
-    except Exception:
-        return {"ai_advice": "¡Sigue practicando!", "steps": ["Estudia más", "Lee diario"]}
+        raise HTTPException(status_code=500, detail="Error con el motor de IA")
 
 @app.post("/api/v1/chatbot")
 async def chatbot_helper(data: ChatMessage):
@@ -193,7 +182,7 @@ async def chatbot_helper(data: ChatMessage):
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Eres el asistente de Certifica_AI. Responde de forma clara usando Markdown (negritas y listas)."},
+                {"role": "system", "content": "Eres el asistente de Certifica_AI. Responde usando Markdown."},
                 {"role": "user", "content": data.message}
             ],
             max_tokens=250
