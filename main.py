@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
-
+from firebase_admin import auth as admin_auth, credentials, firestore
 load_dotenv()
 
 # Inicialización de OpenAI
@@ -276,21 +276,40 @@ if not firebase_admin._apps:
     # Asegúrate de tener el archivo .json de tus credenciales en la raíz
     cred = credentials.Certificate("serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
-
+# db users:
+db = firestore.client()
 @app.post("/api/v1/admin/create-user")
 async def create_user_as_admin(req: UserCreateRequest):
     try:
-        # Crea el usuario en Firebase Auth sin cerrar sesión del admin
+        # 1. Crea el usuario en Firebase Auth
         user = admin_auth.create_user(
             email=req.email,
             password=req.password,
             display_name=req.full_name
         )
+
+        # 2. ESCRIBE EL DOCUMENTO EN FIRESTORE (Lo que faltaba)
+        # Usamos el UID que nos dio Auth para que coincidan perfectamente
+        user_data = {
+            "full_name": req.full_name,
+            "email": req.email,
+            "role": req.role,
+            "nivelingles": "A1", # Nivel por defecto
+            "access_blocked": False,
+            "needs_password_change": True,
+            "created_at": firestore.SERVER_TIMESTAMP # Fecha del servidor
+        }
+        
+        db.collection("users").document(user.uid).set(user_data)
+
+        # 3. Envía el correo (esto ya lo tenías)
         send_credentials_email(req.email, req.password, req.full_name)
+        
         return {"uid": user.uid, "status": "success"}
+
     except Exception as e:
-        # Si el correo ya existe o la contraseña es muy corta, Firebase avisará aquí
-        raise HTTPException(status_code=400, detail=str(e))    
+        print(f"Error en creación: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))  
 
 if __name__ == "__main__":
     import uvicorn
