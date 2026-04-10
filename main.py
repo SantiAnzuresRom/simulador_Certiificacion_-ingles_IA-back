@@ -30,6 +30,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 # Función para enviar credenciales por correo
 def send_credentials_email(user_email, password, name):
@@ -268,16 +269,16 @@ async def evaluate_batch(data: BatchSpeakingEvaluation):
     
 
 # ----------------------------------------------------
-# 7. ADMIN OPS (FIREBASE SDK)
+# 7. ADMIN OPS (FIREBASE SDK) - ACTUALIZADO PARA USER_PROGRESS
 # ----------------------------------------------------
 
 # Inicializar Firebase Admin (Solo si no está inicializado)
 if not firebase_admin._apps:
-    # Asegúrate de tener el archivo .json de tus credenciales en la raíz
     cred = credentials.Certificate("serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
-# db users:
+
 db = firestore.client()
+
 @app.post("/api/v1/admin/create-user")
 async def create_user_as_admin(req: UserCreateRequest):
     try:
@@ -288,28 +289,36 @@ async def create_user_as_admin(req: UserCreateRequest):
             display_name=req.full_name
         )
 
-        # 2. ESCRIBE EL DOCUMENTO EN FIRESTORE (Lo que faltaba)
-        # Usamos el UID que nos dio Auth para que coincidan perfectamente
-        user_data = {
-            "full_name": req.full_name,
+        # 2. ESTRUCTURA UNIFICADA EN USER_PROGRESS
+        # Inicializamos los módulos en 0 para que el Dashboard del alumno no de error
+        user_progress_data = {
+            "fullName": req.full_name,
             "email": req.email,
             "role": req.role,
-            "nivelingles": "A1", # Nivel por defecto
+            "currentLevel": "A1",
             "access_blocked": False,
             "needs_password_change": True,
-            "created_at": firestore.SERVER_TIMESTAMP # Fecha del servidor
+            "created_at": firestore.SERVER_TIMESTAMP,
+            # Estructura de módulos para que el front tenga qué leer desde el día 1
+            "modules_A1": {"reading": 0, "listening": 0, "writing": 0, "speaking": 0},
+            "modules_A2": {"reading": 0, "listening": 0, "writing": 0, "speaking": 0},
+            "modules_B1": {"reading": 0, "listening": 0, "writing": 0, "speaking": 0},
+            "modules_B2": {"reading": 0, "listening": 0, "writing": 0, "speaking": 0},
+            "modules_C1": {"reading": 0, "listening": 0, "writing": 0, "speaking": 0},
+            "modules_C2": {"reading": 0, "listening": 0, "writing": 0, "speaking": 0}
         }
         
-        db.collection("users").document(user.uid).set(user_data)
+        # Guardamos en la colección user_progress
+        db.collection("user_progress").document(user.uid).set(user_progress_data)
 
-        # 3. Envía el correo (esto ya lo tenías)
+        # 3. Envía el correo con las credenciales
         send_credentials_email(req.email, req.password, req.full_name)
         
         return {"uid": user.uid, "status": "success"}
 
     except Exception as e:
         print(f"Error en creación: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))  
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
