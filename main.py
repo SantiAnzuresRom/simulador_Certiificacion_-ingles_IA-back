@@ -120,7 +120,10 @@ async def generate_questions(req: ModuleRequest):
         "listening": f"Act as an IELTS Examiner. Generate a transcript of an IELTS listening section and 5 questions for level {req.level}. JSON: {{'passage': '...', 'questions': [{{'question': '...', 'options': [], 'correctAnswer': '...'}}]}}",
         "writing": f"Act as an IELTS Examiner. Generate an IELTS Task 2 prompt for level {req.level}. JSON: {{'title': 'Writing Task 2', 'prompt': '...'}}",
         "speaking": f"Act as an IELTS Examiner. Generate 5 short pronunciation sentences for level {req.level}. JSON: {{'prompts': ['...', '...', '...', '...', '...']}}",
-        "grammar": grammar_prompt
+        "grammar": f"Act as a senior IELTS Examiner. Generate 5 grammar MCQs for level {req.level}. "
+    "Each question MUST include a '___' (three underscores) where the answer goes. "
+    "IMPORTANT: In the 'options' array, provide ONLY the words, NO letters like 'A)' or 'B)'. "
+    "Return EXACT JSON: {'questions': [{'question': '...', 'options': ['word1', 'word2', 'word3', 'word4'], 'correctAnswer': 'word1'}]}"
     }
 
     try:
