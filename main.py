@@ -35,34 +35,45 @@ app.add_middleware(
 # Función para enviar credenciales por correo
 def send_credentials_email(user_email, password, name):
     try:
-        # Configuración desde variables de entorno (.env)
         smtp_user = os.getenv("SMTP_USER")
         smtp_pass = os.getenv("SMTP_PASS")
         
+        # Validación de seguridad
+        if not smtp_user or not smtp_pass:
+            print("❌ Error: SMTP_USER o SMTP_PASS no configurados en .env")
+            return
+
         msg = MIMEMultipart()
         msg['From'] = f"CertificaAI Support <{smtp_user}>"
         msg['To'] = user_email
         msg['Subject'] = "🚀 Tus credenciales de acceso - CertificaAI"
 
+        # Tu HTML está excelente, lo mantenemos igual
         html = f"""
-        <div style="font-family: sans-serif; background-color: #020617; color: #ffffff; padding: 40px; border-radius: 20px;">
+        <div style="font-family: sans-serif; background-color: #020617; color: #ffffff; padding: 40px; border-radius: 20px; border: 1px solid #1e293b;">
             <h2 style="color: #06b6d4;">¡Bienvenido, {name}!</h2>
-            <p style="color: #94a3b8;">Tu cuenta para el simulador Certifica AI ha sido creada por el administrador, Se recomienda cambiar la contraseña.</p>
+            <p style="color: #94a3b8;">Tu cuenta para el simulador Certifica AI ha sido creada por el administrador.</p>
             <div style="background-color: #0f172a; padding: 20px; border-radius: 15px; border: 1px solid #1e293b; margin: 20px 0;">
                 <p style="margin: 5px 0;"><strong>Usuario:</strong> {user_email}</p>
                 <p style="margin: 5px 0;"><strong>Contraseña Temporal:</strong> <span style="color: #06b6d4;">{password}</span></p>
             </div>
-            <p style="font-size: 11px; color: #64748b;">* Por seguridad, se te pedirá cambiar tu contraseña al ingresar.</p>
+            <p style="font-size: 11px; color: #64748b;">* Por seguridad, se recomienda cambiar la contraseña al ingresar.</p>
         </div>
         """
         msg.attach(MIMEText(html, 'html'))
 
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
+        # --- BLOQUE DE ENVÍO REFORZADO ---
+        # Usamos el puerto 587 con TLS que es el estándar de Gmail
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.set_debuglevel(1) # Esto te servirá para ver el error en la terminal del VPS si falla
+        server.starttls() 
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+        server.quit()
+        print(f"✅ Correo enviado exitosamente a: {user_email}")
+        
     except Exception as e:
-        print(f"Error enviando correo: {e}")
+        print(f"❌ Error crítico enviando correo: {e}")
 # ----------------------------------------------------
 # 1. MODELOS DE DATOS (ESTRUCTURA COMPLETA)
 # ----------------------------------------------------
